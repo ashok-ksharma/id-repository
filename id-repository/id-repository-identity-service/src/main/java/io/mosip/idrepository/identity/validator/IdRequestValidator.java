@@ -19,6 +19,8 @@ import javax.annotation.Nonnull;
 import javax.annotation.PostConstruct;
 import javax.annotation.Resource;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -131,6 +133,9 @@ public class IdRequestValidator extends BaseIdRepoValidator implements Validator
 	@Autowired
 	private IdRepoServiceHelper idRepoServiceHelper;
 
+	@Autowired
+	private ObjectMapper mapper;
+
 
 	@PostConstruct
 	public void init() {
@@ -220,6 +225,7 @@ public class IdRequestValidator extends BaseIdRepoValidator implements Validator
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	public void validateRequest(Object request, Errors errors, String method) {
 		try {
+			mosipLogger.info("validateRequest() method called");
 			if (Objects.nonNull(request)) {
 				Map<String, Object> requestMap = idRepoServiceHelper.convertToMap(request);
 				if (!(requestMap.containsKey(ROOT_PATH) && Objects.nonNull(requestMap.get(ROOT_PATH)))) {
@@ -240,6 +246,8 @@ public class IdRequestValidator extends BaseIdRepoValidator implements Validator
 					if (!errors.hasErrors()) {
 						String schemaVersion;
 						if (requestMap.get(ROOT_PATH) != null) {
+							mosipLogger.info("identity object from request in validate method "
+									+ mapper.writeValueAsString(requestMap.get(ROOT_PATH)));
 							schemaVersion = String
 									.valueOf(((Map<String, Object>) requestMap.get(ROOT_PATH))
 											.get(idRepoServiceHelper.getIdentityMapping().getIdentity().getIDSchemaVersion().getValue()));
@@ -283,8 +291,11 @@ public class IdRequestValidator extends BaseIdRepoValidator implements Validator
 					VALIDATE_REQUEST + " InvalidIdSchemaException | IdObjectIOException " + e.getMessage());
 			errors.rejectValue(REQUEST, ID_OBJECT_PROCESSING_FAILED.getErrorCode(),
 					ID_OBJECT_PROCESSING_FAILED.getErrorMessage());
-		}
-	}
+		} catch (JsonProcessingException e) {
+			mosipLogger.error(IdRepoSecurityManager.getUser(), "JsonProcessingException occurred : " + e.getMessage());
+            throw new RuntimeException(e);
+        }
+    }
 
 	/**
 	 * Validate documents.
