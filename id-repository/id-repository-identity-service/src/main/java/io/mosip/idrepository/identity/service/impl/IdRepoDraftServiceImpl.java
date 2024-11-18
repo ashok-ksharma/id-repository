@@ -28,8 +28,6 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hibernate.exception.JDBCConnectionException;
 import org.json.JSONException;
 import org.skyscreamer.jsonassert.JSONCompare;
@@ -147,16 +145,12 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 	@Autowired
 	private VidDraftHelper vidDraftHelper;
 
-	@Autowired
-	private ObjectMapper mapper;
-	
 	@Value("${mosip.idrepo.create-identity.enable-force-merge:false}")
 	private boolean isForceMergeEnabled;
 	
 	@Override
 	public IdResponseDTO createDraft(String registrationId, String uin) throws IdRepoAppException {
 		try {
-			idrepoDraftLogger.info("createDraft() method called. registrationId : " + registrationId + ", uin : " + uin);
 			UinDraft newDraft;
 			if (isForceMergeEnabled || (!super.uinHistoryRepo.existsByRegId(registrationId) && !uinDraftRepo.existsByRegId(registrationId))) {
 				if (isForceMergeEnabled) {
@@ -166,7 +160,6 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					uin = String.valueOf(map.get("UIN"));
 				}
 				if (Objects.nonNull(uin)) {
-					idrepoDraftLogger.info("uin : " + uin);
 					Optional<Uin> uinObjectOptional = super.uinRepo.findByUinHash(super.getUinHash(uin));
 					if (uinObjectOptional.isPresent()) {
 						Uin uinObject = uinObjectOptional.get();
@@ -193,8 +186,6 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				newDraft.setCreatedBy(IdRepoSecurityManager.getUser());
 				newDraft.setCreatedDateTime(DateUtils.getUTCCurrentDateTime());
 				uinDraftRepo.save(newDraft);
-				ObjectNode identityObject = convertToObject(newDraft.getUinData(), ObjectNode.class);
-				idrepoDraftLogger.info("uinData in uinDraft : " + mapper.writeValueAsString(identityObject));
 				return constructIdResponse(null, DRAFTED, null, null);
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT, "RID ALREADY EXIST");
@@ -203,9 +194,6 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 		} catch (DataAccessException | TransactionException | JDBCConnectionException e) {
 			idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT, e.getMessage());
 			throw new IdRepoAppException(DATABASE_ACCESS_ERROR);
-		} catch (JsonProcessingException e) {
-			idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT, e.getMessage());
-            throw new RuntimeException(e);
         }
     }
 
@@ -237,14 +225,10 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 	@Override
 	public IdResponseDTO updateDraft(String registrationId, IdRequestDTO request) throws IdRepoAppException {
 		try {
-			idrepoDraftLogger.info("updateDraft() method called. registrationId : " + registrationId);
-			ObjectNode identityObjectFromRequest = mapper.convertValue(request.getRequest().getIdentity(), ObjectNode.class);
-			idrepoDraftLogger.info("identityObject from request : " + mapper.writeValueAsString(identityObjectFromRequest));
 			Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
 			if (uinDraft.isPresent()) {
 				UinDraft draftToUpdate = uinDraft.get();
 				if (Objects.isNull(draftToUpdate.getUinData())) {
-					idrepoDraftLogger.info("draftToUpdate uinData is null");
 					ObjectNode identityObject = mapper.convertValue(request.getRequest().getIdentity(), ObjectNode.class);
 					identityObject.putPOJO(VERIFIED_ATTRIBUTES, request.getRequest().getVerifiedAttributes());
 					byte[] uinData = super.convertToBytes(request.getRequest().getIdentity());
@@ -254,17 +238,11 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					draftToUpdate.setUpdatedBy(IdRepoSecurityManager.getUser());
 					draftToUpdate.setUpdatedDateTime(DateUtils.getUTCCurrentDateTime());
 					uinDraftRepo.save(draftToUpdate);
-					ObjectNode identityObject2 = convertToObject(draftToUpdate.getUinData(), ObjectNode.class);
-					idrepoDraftLogger.info("updated uinData : " + mapper.writeValueAsString(identityObject2));
 				} else {
-					idrepoDraftLogger.info("draftToUpdate uinData is not null");
 					updateDemographicData(request, draftToUpdate);
 					updateDocuments(request.getRequest(), draftToUpdate);
 
 					uinDraftRepo.save(draftToUpdate);
-
-					ObjectNode identityObject2 = convertToObject(draftToUpdate.getUinData(), ObjectNode.class);
-					idrepoDraftLogger.info("updated uinData : " + mapper.writeValueAsString(identityObject2));
 				}
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, UPDATE_DRAFT,
@@ -277,9 +255,6 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 		} catch (DataAccessException | TransactionException | JDBCConnectionException e) {
 			idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, UPDATE_DRAFT, e.getMessage());
 			throw new IdRepoAppException(DATABASE_ACCESS_ERROR);
-		} catch (JsonProcessingException e) {
-			idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, UPDATE_DRAFT, e.getMessage());
-            throw new RuntimeException(e);
         }
         return constructIdResponse(null, DRAFTED, null, null);
 	}
