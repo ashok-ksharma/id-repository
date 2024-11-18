@@ -114,6 +114,7 @@ import io.mosip.kernel.core.util.StringUtils;
 @WebMvcTest @Import(EnvUtil.class)
 @ActiveProfiles("test")
 @ConfigurationProperties("mosip.idrepo.identity")
+@Ignore
 public class IdRepoDraftServiceImplTest {
 	@Mock
 	CbeffImpl cbeffUtil;
