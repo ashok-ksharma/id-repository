@@ -20,7 +20,7 @@ on:
       - 1.*
       - develop
       - MOSIP*
-      - branch-*
+      - branch*
 
 jobs:
   build-maven-id-repository:
