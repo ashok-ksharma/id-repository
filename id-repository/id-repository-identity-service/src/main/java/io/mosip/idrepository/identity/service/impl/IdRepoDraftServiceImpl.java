@@ -236,6 +236,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 			if (uinDraft.isPresent()) {
 				UinDraft draftToUpdate = uinDraft.get();
 				if (Objects.isNull(draftToUpdate.getUinData())) {
+					idrepoDraftLogger.info("draftToUpdate uinData is null");
 					ObjectNode identityObject = mapper.convertValue(request.getRequest().getIdentity(), ObjectNode.class);
 					identityObject.putPOJO(VERIFIED_ATTRIBUTES, request.getRequest().getVerifiedAttributes());
 					byte[] uinData = super.convertToBytes(request.getRequest().getIdentity());
@@ -246,6 +247,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					draftToUpdate.setUpdatedDateTime(DateUtils.getUTCCurrentDateTime());
 					uinDraftRepo.save(draftToUpdate);
 				} else {
+					idrepoDraftLogger.info("draftToUpdate uinData is not null");
 					updateDemographicData(request, draftToUpdate);
 					updateDocuments(request.getRequest(), draftToUpdate);
 
@@ -284,6 +286,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 			draftToUpdate.setUinDataHash(securityManager.hash(draftToUpdate.getUinData()));
 			draftToUpdate.setUpdatedBy(IdRepoSecurityManager.getUser());
 			draftToUpdate.setUpdatedDateTime(DateUtils.getUTCCurrentDateTime());
+			throw new JSONException("Exception thrown to reproduce the scenario");
 		}
 	}
 
