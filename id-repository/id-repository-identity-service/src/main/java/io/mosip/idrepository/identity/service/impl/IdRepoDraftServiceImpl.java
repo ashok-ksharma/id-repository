@@ -166,6 +166,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					uin = String.valueOf(map.get("UIN"));
 				}
 				if (Objects.nonNull(uin)) {
+					idrepoDraftLogger.info("uin : " + uin);
 					Optional<Uin> uinObjectOptional = super.uinRepo.findByUinHash(super.getUinHash(uin));
 					if (uinObjectOptional.isPresent()) {
 						Uin uinObject = uinObjectOptional.get();
@@ -192,6 +193,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				newDraft.setCreatedBy(IdRepoSecurityManager.getUser());
 				newDraft.setCreatedDateTime(DateUtils.getUTCCurrentDateTime());
 				uinDraftRepo.save(newDraft);
+				idrepoDraftLogger.info("uinData in uinDraft : " + getUINDataFromDBAsJSONString(newDraft.getUinData()));
 				return constructIdResponse(null, DRAFTED, null, null);
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT,
@@ -232,10 +234,14 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 	@Override
 	public IdResponseDTO updateDraft(String registrationId, IdRequestDTO request) throws IdRepoAppException {
 		try {
+			idrepoDraftLogger.info("updateDraft() method called. registrationId : " + registrationId);
+			idrepoDraftLogger.info("identityObject from request : " +
+					getUINDataFromRequestAsJSONString(request.getRequest().getIdentity()));
 			Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
 			if (uinDraft.isPresent()) {
 				UinDraft draftToUpdate = uinDraft.get();
 				if (Objects.isNull(draftToUpdate.getUinData())) {
+					idrepoDraftLogger.info("draftToUpdate uinData is null");
 					ObjectNode identityObject = mapper.convertValue(request.getRequest().getIdentity(), ObjectNode.class);
 					identityObject.putPOJO(VERIFIED_ATTRIBUTES, request.getRequest().getVerifiedAttributes());
 					byte[] uinData = super.convertToBytes(request.getRequest().getIdentity());
@@ -245,11 +251,15 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					draftToUpdate.setUpdatedBy(IdRepoSecurityManager.getUser());
 					draftToUpdate.setUpdatedDateTime(DateUtils.getUTCCurrentDateTime());
 					uinDraftRepo.save(draftToUpdate);
+					idrepoDraftLogger.info("updated uinData : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 				} else {
+					idrepoDraftLogger.info("draftToUpdate uinData is not null");
+					idrepoDraftLogger.info("uinData before update : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 					updateDemographicData(request, draftToUpdate);
 					updateDocuments(request.getRequest(), draftToUpdate);
 
 					uinDraftRepo.save(draftToUpdate);
+					idrepoDraftLogger.info("updated uinData :  : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 				}
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, UPDATE_DRAFT,
@@ -619,5 +629,19 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 			}
 		});
 		return attributeList;
+	}
+
+	private String getUINDataFromDBAsJSONString(byte[] data) {
+		Configuration configuration = Configuration.builder().jsonProvider(new JacksonJsonProvider())
+				.mappingProvider(new JacksonMappingProvider()).build();
+		DocumentContext inputData = JsonPath.using(configuration).parse(new String(data));
+		return inputData.jsonString();
+	}
+
+	private String getUINDataFromRequestAsJSONString(Object requestData) {
+		Configuration configuration = Configuration.builder().jsonProvider(new JacksonJsonProvider())
+				.mappingProvider(new JacksonMappingProvider()).build();
+		DocumentContext inputDataFromReq = JsonPath.using(configuration).parse(requestData);
+		return inputDataFromReq.jsonString();
 	}
 }
