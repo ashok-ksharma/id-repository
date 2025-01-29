@@ -193,6 +193,13 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				newDraft.setCreatedBy(IdRepoSecurityManager.getUser());
 				newDraft.setCreatedDateTime(DateUtils.getUTCCurrentDateTime());
 				uinDraftRepo.save(newDraft);
+				idrepoDraftLogger.info("uinData string from DB : " + new String(newDraft.getUinData()));
+				Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
+				if (uinDraft.isPresent()) {
+					idrepoDraftLogger.info("uin draft found in DB for RID : " + registrationId);
+					UinDraft savedUinDraft = uinDraft.get();
+					idrepoDraftLogger.info("uinData in uinDraft : " + getUINDataFromDBAsJSONString(savedUinDraft.getUinData()));
+				}
 				idrepoDraftLogger.info("uinData in uinDraft : " + getUINDataFromDBAsJSONString(newDraft.getUinData()));
 				return constructIdResponse(null, DRAFTED, null, null);
 			} else {
