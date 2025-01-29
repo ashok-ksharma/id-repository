@@ -1,22 +1,6 @@
 package io.mosip.idrepository.identity.service.impl;
 
-import static io.mosip.idrepository.core.constant.IdRepoConstants.CREATE_DRAFT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.DISCARD_DRAFT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.DOT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.DRAFTED;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.DRAFT_RECORD_NOT_FOUND;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.EXCLUDED_ATTRIBUTE_LIST;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.EXTRACTION_FORMAT_QUERY_PARAM_SUFFIX;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.GENERATE_UIN;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.GET_DRAFT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.ID_REPO_DRAFT_SERVICE_IMPL;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.MOSIP_KERNEL_IDREPO_JSON_PATH;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.PUBLISH_DRAFT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.ROOT_PATH;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.SPLITTER;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.UIN_REFID;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.UPDATE_DRAFT;
-import static io.mosip.idrepository.core.constant.IdRepoConstants.VERIFIED_ATTRIBUTES;
+import static io.mosip.idrepository.core.constant.IdRepoConstants.*;
 import static io.mosip.idrepository.core.constant.IdRepoErrorConstants.BIO_EXTRACTION_ERROR;
 import static io.mosip.idrepository.core.constant.IdRepoErrorConstants.DATABASE_ACCESS_ERROR;
 import static io.mosip.idrepository.core.constant.IdRepoErrorConstants.NO_RECORD_FOUND;
@@ -55,6 +39,7 @@ import org.skyscreamer.jsonassert.JSONCompareMode;
 import org.skyscreamer.jsonassert.JSONCompareResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
@@ -122,6 +107,9 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 	@Value("${" + UIN_REFID + "}")
 	private String uinRefId;
 
+	@Value("${" + UIN_DATA_REFID + "}")
+	private String uinDataRefId;
+
 	@Autowired
 	private UinDraftRepo uinDraftRepo;
 
@@ -151,6 +139,10 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 	
 	@Value("${mosip.idrepo.create-identity.enable-force-merge:false}")
 	private boolean isForceMergeEnabled;
+
+	@Lazy
+	@Autowired
+	private transient IdRepoSecurityManager securityManager;
 	
 	@Override
 	public IdResponseDTO createDraft(String registrationId, String uin) throws IdRepoAppException {
@@ -199,14 +191,15 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				idrepoDraftLogger.info("Start obtaining the UIN data from DB for RID : " + registrationId);
 				idrepoDraftLogger.info("uinData string from DB for RID : "
 						+ registrationId + ", data : " + new String(newDraft.getUinData()));
-				Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
+				/*Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
 				if (uinDraft.isPresent()) {
 					idrepoDraftLogger.info("uin draft found in DB for RID : " + registrationId);
 					UinDraft savedUinDraft = uinDraft.get();
 					idrepoDraftLogger.info("uinData in uinDraft for RID : "
 							+ registrationId + ", data : " + getUINDataFromDBAsJSONString(savedUinDraft.getUinData()));
-				}
-				idrepoDraftLogger.info("uinData in uinDraft for RID : " + ", data : "+ getUINDataFromDBAsJSONString(newDraft.getUinData()));
+				}*/
+				idrepoDraftLogger.info("uinData in uinDraft for RID : " + ", data : "
+						+ new String(getDecryptedDataBeforeSave(newDraft.getUinData())));
 				return constructIdResponse(null, DRAFTED, null, null);
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT,
@@ -658,5 +651,9 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				.mappingProvider(new JacksonMappingProvider()).build();
 		DocumentContext inputDataFromReq = JsonPath.using(configuration).parse(requestData);
 		return inputDataFromReq.jsonString();
+	}
+
+	private byte[] getDecryptedDataBeforeSave(byte[] encryptedDataBeforeSave) throws IdRepoAppException {
+		return securityManager.decrypt(encryptedDataBeforeSave, uinDataRefId);
 	}
 }
