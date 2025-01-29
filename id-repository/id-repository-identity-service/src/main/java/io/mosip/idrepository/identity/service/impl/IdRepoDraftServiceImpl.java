@@ -166,7 +166,8 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					uin = String.valueOf(map.get("UIN"));
 				}
 				if (Objects.nonNull(uin)) {
-					idrepoDraftLogger.info("uin : " + uin);
+					idrepoDraftLogger.info("uin is not null in create draft. RID : "
+							+ registrationId + ", uin : " + uin);
 					Optional<Uin> uinObjectOptional = super.uinRepo.findByUinHash(super.getUinHash(uin));
 					if (uinObjectOptional.isPresent()) {
 						Uin uinObject = uinObjectOptional.get();
@@ -175,6 +176,8 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 						newDraft.setRegId(registrationId);
 						newDraft.setUin(super.getUinToEncrypt(uin));
 					} else {
+						idrepoDraftLogger.info("uin is null in create draft. RID : "
+								+ registrationId);
 						idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL,
 								CREATE_DRAFT, "UIN NOT EXIST");
 						throw new IdRepoAppException(NO_RECORD_FOUND);
@@ -193,14 +196,17 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 				newDraft.setCreatedBy(IdRepoSecurityManager.getUser());
 				newDraft.setCreatedDateTime(DateUtils.getUTCCurrentDateTime());
 				uinDraftRepo.save(newDraft);
-				idrepoDraftLogger.info("uinData string from DB : " + new String(newDraft.getUinData()));
+				idrepoDraftLogger.info("Start obtaining the UIN data from DB for RID : " + registrationId);
+				idrepoDraftLogger.info("uinData string from DB for RID : "
+						+ registrationId + ", data : " + new String(newDraft.getUinData()));
 				Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(registrationId);
 				if (uinDraft.isPresent()) {
 					idrepoDraftLogger.info("uin draft found in DB for RID : " + registrationId);
 					UinDraft savedUinDraft = uinDraft.get();
-					idrepoDraftLogger.info("uinData in uinDraft : " + getUINDataFromDBAsJSONString(savedUinDraft.getUinData()));
+					idrepoDraftLogger.info("uinData in uinDraft for RID : "
+							+ registrationId + ", data : " + getUINDataFromDBAsJSONString(savedUinDraft.getUinData()));
 				}
-				idrepoDraftLogger.info("uinData in uinDraft : " + getUINDataFromDBAsJSONString(newDraft.getUinData()));
+				idrepoDraftLogger.info("uinData in uinDraft for RID : " + ", data : "+ getUINDataFromDBAsJSONString(newDraft.getUinData()));
 				return constructIdResponse(null, DRAFTED, null, null);
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, CREATE_DRAFT,
@@ -248,7 +254,7 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 			if (uinDraft.isPresent()) {
 				UinDraft draftToUpdate = uinDraft.get();
 				if (Objects.isNull(draftToUpdate.getUinData())) {
-					idrepoDraftLogger.info("draftToUpdate uinData is null");
+					idrepoDraftLogger.info("draftToUpdate uinData is null for RID : " + registrationId);
 					ObjectNode identityObject = mapper.convertValue(request.getRequest().getIdentity(), ObjectNode.class);
 					identityObject.putPOJO(VERIFIED_ATTRIBUTES, request.getRequest().getVerifiedAttributes());
 					byte[] uinData = super.convertToBytes(request.getRequest().getIdentity());
@@ -260,13 +266,15 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl implements IdRepoD
 					uinDraftRepo.save(draftToUpdate);
 					idrepoDraftLogger.info("updated uinData : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 				} else {
-					idrepoDraftLogger.info("draftToUpdate uinData is not null");
-					idrepoDraftLogger.info("uinData before update : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
+					idrepoDraftLogger.info("draftToUpdate uinData is not null for RID : " + registrationId);
+					idrepoDraftLogger.info("uinData before update for RID : " +
+							registrationId + ", data : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 					updateDemographicData(request, draftToUpdate);
 					updateDocuments(request.getRequest(), draftToUpdate);
 
 					uinDraftRepo.save(draftToUpdate);
-					idrepoDraftLogger.info("updated uinData :  : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
+					idrepoDraftLogger.info("updated uinData for RID : "
+							+ registrationId + ", data : " + getUINDataFromDBAsJSONString(draftToUpdate.getUinData()));
 				}
 			} else {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL, UPDATE_DRAFT,
