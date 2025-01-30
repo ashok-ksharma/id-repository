@@ -223,7 +223,7 @@ public class IdRequestValidator extends BaseIdRepoValidator implements Validator
 	 */
 	@SuppressWarnings({ "rawtypes", "unchecked" })
 	public void validateRequest(Object request, Errors errors, String method) {
-		mosipLogger.info("validateRequest() method called");
+		mosipLogger.info("validateRequest() method called. method : " + method);
 		try {
 			if (Objects.nonNull(request)) {
 				Map<String, Object> requestMap = idRepoServiceHelper.convertToMap(request);
