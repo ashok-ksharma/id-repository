@@ -40,7 +40,7 @@ public class CredentialScheduleJobConfiguration {
 	 */
 	@Scheduled(fixedDelayString = "${mosip.credential.request.job.timedelay}")
 	public void processJob() {
-		try {
+		/*try {
 			JobParameters jobParameters = new JobParametersBuilder().addLong("time", System.currentTimeMillis())
 					.toJobParameters();
 			jobLauncher.run(credentialProcessJob, jobParameters);
@@ -48,7 +48,7 @@ public class CredentialScheduleJobConfiguration {
 		} catch (Exception e) {
 			LOGGER.error(IdRepoSecurityManager.getUser(), CREDENTIAL_SCHEDULE_CONFIGURATION,
 					"error in JobLauncher " + ExceptionUtils.getStackTrace(e));
-		}
+		}*/
 	}
 
 	/**
@@ -56,7 +56,7 @@ public class CredentialScheduleJobConfiguration {
 	 */
 	@Scheduled(fixedDelayString = "${mosip.credential.request.reprocess.job.timedelay}")
 	public void reProcessJob() {
-		try {
+		/*try {
 			JobParameters jobParameters = new JobParametersBuilder().addLong("time", System.currentTimeMillis())
 					.toJobParameters();
 			jobLauncher.run(credentialReProcessJob, jobParameters);
@@ -64,7 +64,7 @@ public class CredentialScheduleJobConfiguration {
 		} catch (Exception e) {
 			LOGGER.error(IdRepoSecurityManager.getUser(), CREDENTIAL_SCHEDULE_CONFIGURATION,
 					"error in JobLauncher " + ExceptionUtils.getStackTrace(e));
-		}
+		}*/
 	}
 
 	
