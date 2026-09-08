@@ -72,6 +72,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestContext;
@@ -1032,6 +1033,58 @@ public class IdRepoDraftServiceImplTest {
 		biometrics.add(biometric);
 		uin.setBiometrics(biometrics);
 		ReflectionTestUtils.invokeMethod(idRepoServiceImpl, "publishDocuments", uin, uinObject);
+		verify(uinBiometricRepo).saveAll(any());
+		verify(uinDocumentRepo).saveAll(any());
+	}
+
+	@Test
+	public void testPublishDocuments_ignoresDuplicateBioRows_andStillSavesDocuments() {
+		final Uin uinObject = new Uin();
+		uinObject.setUinRefId("1234567890");
+		UinDraft uin = new UinDraft();
+		UinDocumentDraft document = new UinDocumentDraft();
+		document.setDoccatCode("ProofOfIdentity");
+		document.setDocHash("3A6EB0790F39AC87C94F3856B2DD2C5D110E6811602261A9A923D3BB23ADC8B7");
+		document.setDocId("1234");
+		document.setDocName("name");
+		uin.setDocuments(new ArrayList<>(List.of(document)));
+		UinBiometricDraft biometric = new UinBiometricDraft();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBiometricFileHash("A2C07E94066BE52308E96ABAD995035E62985A1B0D8837E9ACAB47F8F8A52014");
+		biometric.setBioFileId("1234");
+		biometric.setBiometricFileName("name");
+		uin.setBiometrics(new ArrayList<>(List.of(biometric)));
+		when(uinBiometricRepo.saveAll(any())).thenThrow(new DataIntegrityViolationException("uk_uinb"));
+
+		ReflectionTestUtils.invokeMethod(idRepoServiceImpl, "publishDocuments", uin, uinObject);
+
+		verify(uinBiometricRepo).saveAll(any());
+		verify(uinDocumentRepo).saveAll(any());
+	}
+
+	@Test
+	public void testPublishDocuments_ignoresDuplicateDocRows() {
+		final Uin uinObject = new Uin();
+		uinObject.setUinRefId("1234567890");
+		UinDraft uin = new UinDraft();
+		UinDocumentDraft document = new UinDocumentDraft();
+		document.setDoccatCode("ProofOfIdentity");
+		document.setDocHash("3A6EB0790F39AC87C94F3856B2DD2C5D110E6811602261A9A923D3BB23ADC8B7");
+		document.setDocId("1234");
+		document.setDocName("name");
+		uin.setDocuments(new ArrayList<>(List.of(document)));
+		UinBiometricDraft biometric = new UinBiometricDraft();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBiometricFileHash("A2C07E94066BE52308E96ABAD995035E62985A1B0D8837E9ACAB47F8F8A52014");
+		biometric.setBioFileId("1234");
+		biometric.setBiometricFileName("name");
+		uin.setBiometrics(new ArrayList<>(List.of(biometric)));
+		when(uinDocumentRepo.saveAll(any())).thenThrow(new DataIntegrityViolationException("uk_uind"));
+
+		ReflectionTestUtils.invokeMethod(idRepoServiceImpl, "publishDocuments", uin, uinObject);
+
+		verify(uinBiometricRepo).saveAll(any());
+		verify(uinDocumentRepo).saveAll(any());
 	}
 
 	@Ignore
@@ -1859,7 +1912,8 @@ public class IdRepoDraftServiceImplTest {
 		when(securityManager.getIdHashWithSaltModuloByPlainIdHash(anyString(), any())).thenReturn("IDHASH");
 		when(anonymousProfileHelper.setRegId(anyString())).thenReturn(anonymousProfileHelper);
 		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
-		// Make TransactionTemplate actually invoke the consumer so deleteByRegId calls run.
+		when(vidDraftHelper.generateDraftVid(any())).thenReturn("VID-1");
+		// deleteDraftDbRecords uses executeWithoutResult; invoke the callback so deletes run.
 		doAnswer(invocation -> {
 			java.util.function.Consumer<org.springframework.transaction.TransactionStatus> action = invocation.getArgument(0);
 			action.accept(null);
@@ -1877,9 +1931,17 @@ public class IdRepoDraftServiceImplTest {
 		IdResponseDTO response = idRepoServiceImpl.publishDraftV2("1234567890");
 
 		assertNotNull(response);
+		assertEquals("ACTIVATED", response.getResponse().getStatus());
 		String expectedDest = "5B72C3B57A72C6497461289FCA7B1F865ED6FB0596B446FEA1F92AF931A5D4B7";
-		verify(objectStoreHelper).moveAllDraftBiometricsToLive("RID_HASH_TEST", expectedDest);
-		verify(objectStoreHelper).moveAllDraftDemographicsToLive("RID_HASH_TEST", expectedDest);
+		InOrder inOrder = inOrder(objectStoreHelper, uinRepo, uinBiometricDraftRepo, uinDocumentDraftRepo, uinDraftRepo);
+		inOrder.verify(objectStoreHelper).moveAllDraftBiometricsToLive("RID_HASH_TEST", expectedDest);
+		inOrder.verify(objectStoreHelper).moveAllDraftDemographicsToLive("RID_HASH_TEST", expectedDest);
+		inOrder.verify(uinRepo).save(any());
+		inOrder.verify(uinBiometricDraftRepo).deleteByRegId("1234567890");
+		inOrder.verify(uinDocumentDraftRepo).deleteByRegId("1234567890");
+		inOrder.verify(uinDraftRepo).deleteByRegId("1234567890");
+		verify(vidDraftHelper).generateDraftVid(any());
+		verify(vidDraftHelper).activateDraftVid(any());
 	}
 
 	@Test
@@ -1891,8 +1953,7 @@ public class IdRepoDraftServiceImplTest {
 
 		idRepoServiceImpl.publishDraftV2("1234567890");
 
-		// Files must move BEFORE DB records are deleted so a storage failure leaves
-		// the draft DB row intact and the draft is still recoverable.
+		// Files must move BEFORE live write and BEFORE draft DB delete.
 		InOrder inOrder = inOrder(objectStoreHelper, uinBiometricDraftRepo, uinDocumentDraftRepo, uinDraftRepo);
 		inOrder.verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
 		inOrder.verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
@@ -1902,15 +1963,210 @@ public class IdRepoDraftServiceImplTest {
 	}
 
 	@Test
-	public void should_publishDraftV2_propagateException_when_objectMoveFails()
+	public void should_notWriteLiveOrDeleteDraft_when_publishDraftV2_s3MoveFails()
 			throws IOException, IdRepoAppException {
 		UinDraft draft = buildMinimalDraft();
 		draft.setUin("1_YWJj");
 		stubPublishDraftV2(draft);
-		doThrow(new RuntimeException("storage error"))
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorCode(),
+				IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorMessage()))
 				.when(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
 
-		assertThrows(RuntimeException.class, () -> idRepoServiceImpl.publishDraftV2("1234567890"));
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper, never()).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinRepo, never()).save(any());
+		verify(vidDraftHelper, never()).generateDraftVid(any());
+		verify(vidDraftHelper, never()).activateDraftVid(any());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinBiometricDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinDocumentDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_notWriteLiveOrDeleteDraft_when_publishDraftV2_demographicMoveFails_afterBioMove()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorCode(),
+				IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorMessage()))
+				.when(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_MOVE_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(uinRepo, never()).save(any());
+		verify(vidDraftHelper, never()).generateDraftVid(any());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_notDeleteDraft_when_publishDraftV2_generateVidFails_afterS3()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(vidDraftHelper.generateDraftVid(any()))
+				.thenThrow(new IdRepoAppException(IdRepoErrorConstants.VID_GENERATION_FAILED));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.VID_GENERATION_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinRepo, never()).save(any());
+		verify(vidDraftHelper, never()).activateDraftVid(any());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_notDeleteDraft_when_publishDraftV2_activateVidFails()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(vidDraftHelper.generateDraftVid(any())).thenReturn("VID-1");
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.VID_GENERATION_FAILED))
+				.when(vidDraftHelper).activateDraftVid("VID-1");
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.VID_GENERATION_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinRepo).save(any());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinBiometricDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinDocumentDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_notDeleteDraft_when_publishDraftV2_liveWriteFails_afterS3()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(uinRepo.save(any())).thenThrow(JDBCConnectionException.class);
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_keepLiveWrite_when_publishDraftV2_draftDeleteFails_afterS3AndCommit()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		doThrow(JDBCConnectionException.class)
+				.when(uinDraftRepo).deleteByRegId(anyString());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class,
+				() -> idRepoServiceImpl.publishDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinRepo).save(any());
+		verify(uinDraftRepo).deleteByRegId("1234567890");
+	}
+
+	@Test
+	public void should_updateExistingLiveUin_and_notCreateSecondRow_when_publishDraftV2_retried()
+			throws Exception {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(uinRepo.existsByUinHash(any())).thenReturn(true);
+		Uin existing = new Uin();
+		existing.setUinRefId("ref-id-123");
+		existing.setStatusCode("ACTIVATED");
+		existing.setUinData("{}".getBytes());
+		IdRepoDraftServiceImpl spy = Mockito.spy(idRepoServiceImpl);
+		doReturn(existing).when(spy).updateIdentity(any(), anyString());
+
+		IdResponseDTO response = spy.publishDraftV2("1234567890");
+
+		assertNotNull(response);
+		assertEquals("ACTIVATED", response.getResponse().getStatus());
+		verify(spy).updateIdentity(any(), anyString());
+		verify(vidDraftHelper, never()).generateDraftVid(any());
+		verify(vidDraftHelper, never()).activateDraftVid(any());
+		verify(objectStoreHelper).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper).moveAllDraftDemographicsToLive(anyString(), anyString());
+		verify(uinDraftRepo).deleteByRegId("1234567890");
+	}
+
+	@Test
+	public void should_addIdentity_when_publishDraftV2_generateDraftVidReturnsNull()
+			throws Exception {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(uinRepo.existsByUinHash(any())).thenReturn(false);
+		when(vidDraftHelper.generateDraftVid(any())).thenReturn(null);
+		Uin saved = new Uin();
+		saved.setUinRefId("ref-id-123");
+		saved.setStatusCode("ACTIVATED");
+		saved.setUinData("{}".getBytes());
+		IdRepoDraftServiceImpl spy = Mockito.spy(idRepoServiceImpl);
+		doReturn(saved).when(spy).addIdentity(any(), anyString());
+
+		IdResponseDTO response = spy.publishDraftV2("1234567890");
+
+		assertNotNull(response);
+		assertEquals("ACTIVATED", response.getResponse().getStatus());
+		verify(spy).addIdentity(any(), anyString());
+		verify(spy, never()).updateIdentity(any(), anyString());
+		verify(vidDraftHelper).generateDraftVid(any());
+		verify(vidDraftHelper).activateDraftVid(null);
+	}
+
+	@Test
+	public void should_ignoreDuplicateLiveBioRows_when_publishDraftV2_retriedAfterPartialWrite()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(uinBiometricRepo.saveAll(any())).thenThrow(new DataIntegrityViolationException("uk_uinb"));
+
+		IdResponseDTO response = idRepoServiceImpl.publishDraftV2("1234567890");
+
+		assertNotNull(response);
+		verify(uinRepo).save(any());
+		verify(uinBiometricRepo).saveAll(any());
+		verify(uinDocumentRepo).saveAll(any());
+		verify(uinDraftRepo).deleteByRegId("1234567890");
+	}
+
+	@Test
+	public void should_ignoreDuplicateLiveDocRows_when_publishDraftV2_retriedAfterPartialWrite()
+			throws IOException, IdRepoAppException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUin("1_YWJj");
+		stubPublishDraftV2(draft);
+		when(uinDocumentRepo.saveAll(any())).thenThrow(new DataIntegrityViolationException("uk_uind"));
+
+		IdResponseDTO response = idRepoServiceImpl.publishDraftV2("1234567890");
+
+		assertNotNull(response);
+		verify(uinRepo).save(any());
+		verify(uinBiometricRepo).saveAll(any());
+		verify(uinDocumentRepo).saveAll(any());
+		verify(uinDraftRepo).deleteByRegId("1234567890");
 	}
 
 	// ── extractBiometricsV2 success-path ─────────────────────────────────────
