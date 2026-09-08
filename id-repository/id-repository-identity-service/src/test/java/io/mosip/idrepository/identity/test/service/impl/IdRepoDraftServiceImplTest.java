@@ -62,6 +62,7 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.InOrder;
@@ -76,6 +77,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestContext;
 import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.web.context.WebApplicationContext;
 
 import javax.xml.bind.DatatypeConverter;
@@ -244,6 +246,11 @@ public class IdRepoDraftServiceImplTest {
 		ReflectionTestUtils.setField(idRepoServiceImpl, "anonymousProfileHelper", anonymousProfileHelper);
 		ReflectionTestUtils.setField(idRepoServiceImpl, "validator", validator);
 		ReflectionTestUtils.setField(idRepoServiceImpl, "objectStoreHelper", objectStoreHelper);
+		ReflectionTestUtils.setField(idRepoServiceImpl, "transactionTemplate", transactionTemplate);
+		when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+			TransactionCallback<?> callback = invocation.getArgument(0);
+			return callback.doInTransaction(null);
+		});
 		ReflectionTestUtils.setField(idRepoServiceImpl, "cbeffUtil", cbeffUtil);
 		ReflectionTestUtils.setField(idRepoServiceImpl, "uinEncryptSaltRepo", uinEncryptSaltRepo);
 		ReflectionTestUtils.setField(idRepoServiceImpl, "uinBiometricRepo", uinBiometricRepo);
@@ -1209,7 +1216,16 @@ public class IdRepoDraftServiceImplTest {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
 		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", null, false);
-		assertNotNull(response);
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertNull(saved.getUin());
+		assertNull(saved.getUinHash());
+		verify(idRepoServiceHelper, never()).generateUin();
+		verify(objectStoreHelper, never()).copyBiometricLiveToDraft(any(), any(), any());
+		verify(objectStoreHelper, never()).copyDemographicLiveToDraft(any(), any(), any());
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
 	}
 
 	@Test
@@ -1219,6 +1235,7 @@ public class IdRepoDraftServiceImplTest {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", null, false));
 		assertEquals(IdRepoErrorConstants.RECORD_EXISTS.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
 	}
 
 	@Test
@@ -1237,6 +1254,7 @@ public class IdRepoDraftServiceImplTest {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", null, false));
 		assertEquals(IdRepoErrorConstants.RID_OLDER_THAN_LATEST_PROCESSED.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
 	}
 
 	@Test
@@ -1245,7 +1263,14 @@ public class IdRepoDraftServiceImplTest {
 		when(uinRepo.existsByRegId(any())).thenReturn(true);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
 		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", null, false);
-		assertNotNull(response);
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertNull(saved.getUin());
+		assertNull(saved.getUinHash());
+		verify(idRepoServiceHelper, never()).generateUin();
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
 	}
 
 	// ── updateDraftUinData ───────────────────────────────────────────────────
@@ -1358,15 +1383,41 @@ public class IdRepoDraftServiceImplTest {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
 		Uin uinEntity = buildUinEntity();
-		when(uinRepo.findByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
 		when(uinDraftRepo.findByUinHash(any())).thenReturn(null);
-		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
-		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
-		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
-		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
-		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
+		stubCreateDraftCrypto();
 		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", "274390482564", true);
-		assertNotNull(response);
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertEquals(uinEntity.getUinHash(), saved.getUinHash());
+		assertEquals("1234_274390482564_YWJj", saved.getUin());
+		verify(idRepoServiceHelper, never()).generateUin();
+		verify(objectStoreHelper, never()).getRidHash(any());
+		verify(objectStoreHelper, never()).copyBiometricLiveToDraft(any(), any(), any());
+		verify(objectStoreHelper, never()).copyDemographicLiveToDraft(any(), any(), any());
+		verify(proxyService, never()).retrieveIdentityByRid(any(), any(), any());
+		verify(uinRepo).findWithBiometricsByUinHash(any());
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
+	}
+
+	@Test
+	public void should_createDraftFromLiveUin_when_generateUinFalse_and_uinProvided() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		stubCreateDraftCrypto();
+		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", "274390482564", false);
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertEquals(uinEntity.getUinHash(), saved.getUinHash());
+		verify(idRepoServiceHelper, never()).generateUin();
+		verify(uinRepo).findWithBiometricsByUinHash(any());
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
 	}
 
 	@Test
@@ -1374,36 +1425,50 @@ public class IdRepoDraftServiceImplTest {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
 		when(idRepoServiceHelper.generateUin()).thenReturn("274390482564");
-		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
-		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
-		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
-		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
-		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
+		stubCreateDraftCrypto();
 		when(securityManager.hash(any())).thenReturn("data-hash");
 		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", null, true);
-		assertNotNull(response);
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertEquals("1234_274390482564_YWJj", saved.getUin());
+		assertEquals("1234_some-hash", saved.getUinHash());
+		assertEquals("data-hash", saved.getUinDataHash());
+		assertNotNull(saved.getUinData());
+		verify(idRepoServiceHelper, times(1)).generateUin();
+		verify(objectStoreHelper, never()).getRidHash(any());
+		verify(objectStoreHelper, never()).copyBiometricLiveToDraft(any(), any(), any());
+		verify(objectStoreHelper, never()).copyDemographicLiveToDraft(any(), any(), any());
+		verify(uinRepo, never()).findWithBiometricsByUinHash(any());
+		verify(uinRepo, never()).findWithBiometricsByRegId(any());
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
 	}
 
 	@Test
-	public void should_throwRecordExists_when_createDraftWithUin_ridAlreadyExists() {
+	public void should_throwRecordExists_when_createDraftWithUin_ridAlreadyExists() throws IdRepoAppException {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(true);
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
 		assertEquals(IdRepoErrorConstants.RECORD_EXISTS.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(idRepoServiceHelper, never()).generateUin();
 	}
 
 	@Test
-	public void should_throwNoRecordFound_when_createDraftWithUin_uinNotInDb() {
+	public void should_throwNoRecordFound_when_createDraftWithUin_uinNotInDb() throws IdRepoAppException {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
 		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
 		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
 		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
-		when(uinRepo.findByUinHash(any())).thenReturn(Optional.empty());
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.empty());
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
 		assertEquals(IdRepoErrorConstants.NO_RECORD_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(idRepoServiceHelper, never()).generateUin();
 	}
 
 	@Test
@@ -1412,6 +1477,7 @@ public class IdRepoDraftServiceImplTest {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
 		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
 	}
 
 	@Test
@@ -1422,18 +1488,13 @@ public class IdRepoDraftServiceImplTest {
 		// This RID is still the latest/current one on the live Uin table (not superseded).
 		when(uinRepo.existsByRegId(any())).thenReturn(true);
 
-		// proxyService returns the existing identity with the committed UIN.
-		io.mosip.idrepository.core.dto.ResponseDTO responseDTO = new io.mosip.idrepository.core.dto.ResponseDTO();
-		responseDTO.setStatus("ACTIVATED");
-		java.util.LinkedHashMap<String, Object> identityMap = new java.util.LinkedHashMap<>();
-		identityMap.put("UIN", "274390482564");
-		responseDTO.setIdentity(identityMap);
-		io.mosip.idrepository.core.dto.IdResponseDTO existingIdentityResp = new io.mosip.idrepository.core.dto.IdResponseDTO();
-		existingIdentityResp.setResponse(responseDTO);
-		when(proxyService.retrieveIdentityByRid(anyString(), any(), any())).thenReturn(existingIdentityResp);
-
 		Uin uinEntity = buildUinEntity();
-		when(uinRepo.findByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		uinEntity.setUin("1234_YWJj");
+		uinEntity.setUinHash("1234_some-hash");
+		when(uinRepo.findWithBiometricsByRegId("REG123")).thenReturn(Optional.of(uinEntity));
+		when(uinEncryptSaltRepo.getOne(1234)).thenReturn(uinEncryptSalt);
+		when(uinEncryptSalt.getSalt()).thenReturn("YWJj");
+		when(securityManager.decryptWithSalt(any(), any(), any())).thenReturn("274390482564".getBytes());
 		when(uinDraftRepo.findByUinHash(any())).thenReturn(null);
 		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
 		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
@@ -1443,11 +1504,144 @@ public class IdRepoDraftServiceImplTest {
 
 		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", null, true);
 
-		assertNotNull(response);
-		// UIN generator must NOT have been called — reprocess reuses the existing UIN.
+		assertDraftedResponse(response);
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertEquals(uinEntity.getUinHash(), saved.getUinHash());
+		assertEquals("1234_274390482564_YWJj", saved.getUin());
 		verify(idRepoServiceHelper, never()).generateUin();
-		// Proxy service must have been called to retrieve the existing identity.
-		verify(proxyService).retrieveIdentityByRid(eq("REG123"), isNull(), isNull());
+		verify(proxyService, never()).retrieveIdentityByRid(any(), any(), any());
+		verify(uinRepo).findWithBiometricsByRegId("REG123");
+		verify(uinRepo, never()).findByUinHash(any());
+		verify(uinRepo, never()).findWithBiometricsByUinHash(any());
+		verify(objectStoreHelper, never()).getRidHash(any());
+		verify(uinDraftRepo, times(1)).save(any(UinDraft.class));
+	}
+
+	@Test
+	public void should_copyLiveFilesToDraft_when_createDraftV2_hasBiometricsAndDocuments()
+			throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		UinBiometric biometric = new UinBiometric();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBioFileId("bio-1");
+		biometric.setBiometricFileName("name");
+		biometric.setBiometricFileHash("hash");
+		uinEntity.setBiometrics(new ArrayList<>(List.of(biometric)));
+		UinDocument document = new UinDocument();
+		document.setDoccatCode("ProofOfIdentity");
+		document.setDocId("doc-1");
+		document.setDocName("name");
+		document.setDocHash("hash");
+		uinEntity.setDocuments(new ArrayList<>(List.of(document)));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
+		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
+		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
+		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
+		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
+		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
+
+		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", "274390482564", true);
+
+		assertDraftedResponse(response);
+		String livePrefix = uinEntity.getUinHash().split("_")[1];
+		InOrder inOrder = inOrder(objectStoreHelper, uinDraftRepo);
+		inOrder.verify(objectStoreHelper).copyBiometricLiveToDraft(livePrefix, "rid-hash", "bio-1");
+		inOrder.verify(objectStoreHelper).copyDemographicLiveToDraft(livePrefix, "rid-hash", "doc-1");
+		inOrder.verify(uinDraftRepo).save(any(UinDraft.class));
+		UinDraft saved = captureSavedDraft();
+		assertEquals("REG123", saved.getRegId());
+		assertEquals("DRAFT", saved.getStatusCode());
+		assertEquals(uinEntity.getUinHash(), saved.getUinHash());
+		assertEquals("bio-1", saved.getBiometrics().get(0).getBioFileId());
+		assertEquals("doc-1", saved.getDocuments().get(0).getDocId());
+		verify(idRepoServiceHelper, never()).generateUin();
+		verify(objectStoreHelper, times(1)).copyBiometricLiveToDraft(any(), any(), any());
+		verify(objectStoreHelper, times(1)).copyDemographicLiveToDraft(any(), any(), any());
+	}
+
+	@Test
+	public void should_notSaveDraft_when_createDraftV2_objectStoreCopyFails() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		UinBiometric biometric = new UinBiometric();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBioFileId("bio-1");
+		biometric.setBiometricFileName("name");
+		biometric.setBiometricFileHash("hash");
+		uinEntity.setBiometrics(new ArrayList<>(List.of(biometric)));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		stubCreateDraftCrypto();
+		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR))
+				.when(objectStoreHelper).copyBiometricLiveToDraft(any(), any(), any());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
+
+		assertEquals(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(idRepoServiceHelper, never()).generateUin();
+	}
+
+	@Test
+	public void should_throwUinGenerationFailed_when_createDraftV2_generateUinFails() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		when(idRepoServiceHelper.generateUin())
+				.thenThrow(new IdRepoAppException(IdRepoErrorConstants.UIN_GENERATION_FAILED));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", null, true));
+
+		assertEquals(IdRepoErrorConstants.UIN_GENERATION_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(objectStoreHelper, never()).copyBiometricLiveToDraft(any(), any(), any());
+	}
+
+	@Test
+	public void should_throwRidOlderThanLatestProcessed_when_createDraftV2_reprocessIsNotLatest() throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(true);
+		when(uinRepo.existsByRegId(any())).thenReturn(false);
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", null, true));
+
+		assertEquals(IdRepoErrorConstants.RID_OLDER_THAN_LATEST_PROCESSED.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(idRepoServiceHelper, never()).generateUin();
+	}
+
+	@Test
+	public void should_throwNoRecordFound_when_createDraftV2_reprocessLiveUinMissing() throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(true);
+		when(uinRepo.existsByRegId(any())).thenReturn(true);
+		when(uinRepo.findWithBiometricsByRegId("REG123")).thenReturn(Optional.empty());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", null, true));
+
+		assertEquals(IdRepoErrorConstants.NO_RECORD_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
+		verify(idRepoServiceHelper, never()).generateUin();
+	}
+
+	@Test
+	public void should_throwUnknownError_when_createDraftV2_unexpectedRuntimeException() {
+		when(uinDraftRepo.existsByRegId(any())).thenThrow(new IllegalStateException("unexpected"));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
+
+		assertEquals(IdRepoErrorConstants.UNKNOWN_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(uinDraftRepo, never()).save(any());
 	}
 
 	// ── updateDraftUinData — success ─────────────────────────────────────────
@@ -1841,6 +2035,28 @@ public class IdRepoDraftServiceImplTest {
 		demo.setValue(Base64.getEncoder().encodeToString("pdf-bytes".getBytes()));
 		req.setDocuments(List.of(bio, demo));
 		return req;
+	}
+
+	private UinDraft captureSavedDraft() {
+		ArgumentCaptor<UinDraft> captor = ArgumentCaptor.forClass(UinDraft.class);
+		verify(uinDraftRepo).save(captor.capture());
+		return captor.getValue();
+	}
+
+	private void assertDraftedResponse(IdResponseDTO response) {
+		assertNotNull(response);
+		assertNotNull(response.getResponse());
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertNull(response.getResponse().getDocuments());
+	}
+
+	private void stubCreateDraftCrypto() throws IdRepoAppException {
+		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
+		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
+		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
+		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
+		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
 	}
 
 	private Uin buildUinEntity() throws IOException, NoSuchAlgorithmException {
