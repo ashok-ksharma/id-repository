@@ -948,9 +948,8 @@ public class IdRepoDraftServiceImplTest {
 
 	@Test
 	public void should_discardDraftV2_deleteObjectStoreFilesAndDbRecords_when_draftExists()
-			throws IdRepoAppException, IOException {
-		UinDraft draft = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+			throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(anyString())).thenReturn(true);
 		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
 		doAnswer(invocation -> {
 			java.util.function.Consumer<org.springframework.transaction.TransactionStatus> action = invocation.getArgument(0);
@@ -961,18 +960,19 @@ public class IdRepoDraftServiceImplTest {
 		IdResponseDTO response = idRepoServiceImpl.discardDraftV2("1234567890");
 
 		assertNotNull(response);
-		verify(objectStoreHelper).deleteAllDraftBiometrics("RID_HASH_TEST");
-		verify(objectStoreHelper).deleteAllDraftDemographics("RID_HASH_TEST");
-		verify(uinBiometricDraftRepo).deleteByRegId("1234567890");
-		verify(uinDocumentDraftRepo).deleteByRegId("1234567890");
-		verify(uinDraftRepo).deleteByRegId("1234567890");
+		verify(uinDraftRepo, never()).findByRegId(any());
+		InOrder inOrder = inOrder(objectStoreHelper, uinBiometricDraftRepo, uinDocumentDraftRepo, uinDraftRepo);
+		inOrder.verify(objectStoreHelper).deleteAllDraftBiometrics("RID_HASH_TEST");
+		inOrder.verify(objectStoreHelper).deleteAllDraftDemographics("RID_HASH_TEST");
+		inOrder.verify(uinBiometricDraftRepo).deleteByRegId("1234567890");
+		inOrder.verify(uinDocumentDraftRepo).deleteByRegId("1234567890");
+		inOrder.verify(uinDraftRepo).deleteByRegId("1234567890");
 	}
 
 	@Test
 	public void should_discardDraftV2_keepDbRecords_when_objectDeleteFails()
-			throws IdRepoAppException, IOException {
-		UinDraft draft = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+			throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(anyString())).thenReturn(true);
 		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
 		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorCode(),
 				IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorMessage()))
@@ -982,23 +982,54 @@ public class IdRepoDraftServiceImplTest {
 				idRepoServiceImpl.discardDraftV2("1234567890"));
 		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorCode(), thrown.getErrorCode());
 		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinBiometricDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinDocumentDraftRepo, never()).deleteByRegId(anyString());
 	}
 
-	@Test(expected = IdRepoAppException.class)
-	public void should_throwNoRecordFound_when_discardDraftV2_ridDoesNotExist() throws IdRepoAppException {
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.empty());
-		idRepoServiceImpl.discardDraftV2("1234567890");
+	@Test
+	public void should_throwNoRecordFound_when_discardDraftV2_ridDoesNotExist()
+			throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(anyString())).thenReturn(false);
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.discardDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.NO_RECORD_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
+		verify(objectStoreHelper, never()).deleteAllDraftBiometrics(anyString());
+		verify(objectStoreHelper, never()).deleteAllDraftDemographics(anyString());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
 	}
 
 	@Test
 	public void testDiscardDraftV2JDBCConnectionException() throws IdRepoAppException {
-		try {
-			when(uinDraftRepo.findByRegId(Mockito.any())).thenThrow(JDBCConnectionException.class);
-			IdResponseDTO response = idRepoServiceImpl.discardDraftV2("123567890");
-			assertNotNull(response);
-		} catch (IdRepoAppException e) {
-			assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), e.getErrorCode());
-		}
+		when(uinDraftRepo.existsByRegId(any())).thenThrow(JDBCConnectionException.class);
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.discardDraftV2("123567890"));
+
+		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).deleteAllDraftBiometrics(anyString());
+	}
+
+	@Test
+	public void should_throwDatabaseAccessError_when_discardDraftV2_dbDeleteFails_afterS3()
+			throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(anyString())).thenReturn(true);
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+		doAnswer(invocation -> {
+			java.util.function.Consumer<org.springframework.transaction.TransactionStatus> action = invocation.getArgument(0);
+			action.accept(null);
+			return null;
+		}).when(transactionTemplate).executeWithoutResult(any());
+		doThrow(JDBCConnectionException.class).when(uinDraftRepo).deleteByRegId(anyString());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.discardDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).deleteAllDraftBiometrics("RID_HASH_TEST");
+		verify(objectStoreHelper).deleteAllDraftDemographics("RID_HASH_TEST");
 	}
 
 	@Test

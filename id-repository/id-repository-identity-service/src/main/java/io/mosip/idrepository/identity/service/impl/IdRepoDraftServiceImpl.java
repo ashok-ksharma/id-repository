@@ -394,15 +394,15 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl
 	}
 
 	@Override
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	public IdResponseDTO discardDraftV2(String regId) throws IdRepoAppException {
 		try {
-			Optional<UinDraft> uinDraft = uinDraftRepo.findByRegId(regId);
-			if (uinDraft.isEmpty()) {
+			if (!uinDraftRepo.existsByRegId(regId)) {
 				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL,
 						DISCARD_DRAFT, "RID NOT FOUND IN DB | regId=" + regId);
 				throw new IdRepoAppException(NO_RECORD_FOUND);
 			}
-			cleanupDraft(uinDraft.get());
+			cleanupDraft(regId);
 			return constructIdResponse(null, "DISCARDED", null, null);
 		} catch (DataAccessException | TransactionException | JDBCConnectionException e) {
 			idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL,
@@ -1106,16 +1106,15 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl
 	}
 
 	/**
-	 * Full V2 cleanup: deletes object-store draft files then DB records.
-	 * Used by {@link #publishDraftV2} and {@link #createDraftWithUin} stale cleanup.
+	 * Deletes object-store draft files then DB records. S3 first so a failed
+	 * object delete leaves the draft row for retry. Caller must not hold a
+	 * DB transaction across this method — S3 I/O happens here.
 	 */
-	public void cleanupDraft(UinDraft draft) throws IdRepoAppException {
-		String ridHash = objectStoreHelper.getRidHash(draft.getRegId());
-		// Delete object-store files first — if deletion fails the DB record still points
-		// to the draft files so the failure is visible and recoverable.
+	public void cleanupDraft(String regId) throws IdRepoAppException {
+		String ridHash = objectStoreHelper.getRidHash(regId);
 		objectStoreHelper.deleteAllDraftBiometrics(ridHash);
 		objectStoreHelper.deleteAllDraftDemographics(ridHash);
-		deleteDraftDbRecords(draft.getRegId());
+		deleteDraftDbRecords(regId);
 	}
 
 	private void deleteDraftDbRecords(String regId) {
