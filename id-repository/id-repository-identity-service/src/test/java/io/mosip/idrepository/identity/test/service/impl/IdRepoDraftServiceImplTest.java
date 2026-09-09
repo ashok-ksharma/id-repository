@@ -148,7 +148,7 @@ public class IdRepoDraftServiceImplTest {
 	IdRepoServiceImpl service;
 
 	@Mock
-	private IdRepoProxyServiceImpl proxyService;
+	private TestableProxyService proxyService;
 
 	@Mock
 	IdRepoSecurityManager securityManager;
@@ -590,7 +590,7 @@ public class IdRepoDraftServiceImplTest {
 
 		IdResponseDTO response = idRepoServiceImpl.updateDraftV2(draft.getRegId(), request);
 
-		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
 		verify(objectStoreHelper).putDraftBiometricObject(eq("AAFCC2383A50FAFD9131EF9F731CCCF276BBCD6D62076ADF6C887B791BB75D85"), any(), any());
 		verify(objectStoreHelper).putDraftDemographicObject(eq("AAFCC2383A50FAFD9131EF9F731CCCF276BBCD6D62076ADF6C887B791BB75D85"), any(), any());
 		verify(objectStoreHelper).getDraftBiometricObject(eq("AAFCC2383A50FAFD9131EF9F731CCCF276BBCD6D62076ADF6C887B791BB75D85"), eq("1234"));
@@ -959,7 +959,9 @@ public class IdRepoDraftServiceImplTest {
 
 		IdResponseDTO response = idRepoServiceImpl.discardDraftV2("1234567890");
 
-		assertNotNull(response);
+		assertEquals("DISCARDED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertNull(response.getResponse().getDocuments());
 		verify(uinDraftRepo, never()).findByRegId(any());
 		InOrder inOrder = inOrder(objectStoreHelper, uinBiometricDraftRepo, uinDocumentDraftRepo, uinDraftRepo);
 		inOrder.verify(objectStoreHelper).deleteAllDraftBiometrics("RID_HASH_TEST");
@@ -981,6 +983,26 @@ public class IdRepoDraftServiceImplTest {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.discardDraftV2("1234567890"));
 		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).deleteAllDraftDemographics(anyString());
+		verify(uinDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinBiometricDraftRepo, never()).deleteByRegId(anyString());
+		verify(uinDocumentDraftRepo, never()).deleteByRegId(anyString());
+	}
+
+	@Test
+	public void should_discardDraftV2_keepDbRecords_when_demographicDeleteFails_afterBioDelete()
+			throws IdRepoAppException {
+		when(uinDraftRepo.existsByRegId(anyString())).thenReturn(true);
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorCode(),
+				IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorMessage()))
+				.when(objectStoreHelper).deleteAllDraftDemographics(anyString());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.discardDraftV2("1234567890"));
+
+		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_DELETE_FAILED.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).deleteAllDraftBiometrics("RID_HASH_TEST");
 		verify(uinDraftRepo, never()).deleteByRegId(anyString());
 		verify(uinBiometricDraftRepo, never()).deleteByRegId(anyString());
 		verify(uinDocumentDraftRepo, never()).deleteByRegId(anyString());
@@ -1407,57 +1429,214 @@ public class IdRepoDraftServiceImplTest {
 
 	@Test
 	public void should_returnDemographicsOnly_when_typeIsDemographics() throws IdRepoAppException, IOException {
-		UinDraft uin = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(uin));
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
 		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "demographics");
-		assertNotNull(response);
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertEquals(List.of("x", "y"), response.getResponse().getVerifiedAttributes());
+		Map<String, Object> identity = mapper.convertValue(response.getResponse().getIdentity(),
+				new TypeReference<Map<String, Object>>() {});
+		assertEquals("2419762130", identity.get("UIN"));
+		assertNull(identity.get("verifiedAttributes"));
+		assertTrue(response.getResponse().getDocuments() == null
+				|| response.getResponse().getDocuments().isEmpty());
+		verify(objectStoreHelper).getRidHash("1234567890");
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDemographicObject(anyString(), anyString());
 	}
 
 	@Test
-	public void should_returnBiometricsOnly_when_typeIsBiometrics() throws IdRepoAppException, IOException {
-		UinDraft uin = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(uin));
+	public void should_returnBiometricsOnly_fromDraftPath_when_typeIsBiometrics()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
 		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "biometrics");
-		assertNotNull(response);
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertEquals(1, response.getResponse().getDocuments().size());
+		assertEquals("individualBiometrics", response.getResponse().getDocuments().get(0).getCategory());
+		assertEquals(CryptoUtil.encodeToURLSafeBase64("extracted-cbeff".getBytes()),
+				response.getResponse().getDocuments().get(0).getValue());
+		verify(objectStoreHelper).getDraftBiometricObject("RID_HASH_TEST", "1234");
+		verify(proxyService).getBiometricsForRequestedFormatsDraft(eq("RID_HASH_TEST"), eq("1234"), any(), any());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getBiometricObject(anyString(), anyString());
 	}
 
 	@Test
-	public void should_returnFullDraft_when_typeIsAll() throws IdRepoAppException, IOException {
-		UinDraft uin = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(uin));
-		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "all");
-		assertNotNull(response);
-	}
+	public void should_returnSupportingDocumentsOnly_fromDraftPath_when_typeIsSupportingDocuments()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
 
-	@Test
-	public void should_returnFullDraft_when_typeIsNull() throws IdRepoAppException, IOException {
-		UinDraft uin = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(uin));
-		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), null);
-		assertNotNull(response);
-	}
-
-	@Test
-	public void should_returnSupportingDocumentsOnly_when_typeIsSupportingDocuments() throws IdRepoAppException, IOException {
-		UinDraft uin = buildMinimalDraft();
-		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(uin));
 		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "supportingDocuments");
-		assertNotNull(response);
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertEquals(1, response.getResponse().getDocuments().size());
+		assertEquals("ProofOfIdentity", response.getResponse().getDocuments().get(0).getCategory());
+		assertEquals(CryptoUtil.encodeToURLSafeBase64("doc-bytes".getBytes()),
+				response.getResponse().getDocuments().get(0).getValue());
+		verify(objectStoreHelper).getDraftDemographicObject("RID_HASH_TEST", "1236");
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDemographicObject(anyString(), anyString());
 	}
 
 	@Test
-	public void should_throwInvalidInputParameter_when_typeIsInvalid() {
+	public void should_returnIdentityAndDraftFiles_when_typeIsAll() throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
+		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "all");
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertEquals(List.of("x", "y"), response.getResponse().getVerifiedAttributes());
+		assertNotNull(response.getResponse().getIdentity());
+		assertEquals(2, response.getResponse().getDocuments().size());
+		assertEquals("individualBiometrics", response.getResponse().getDocuments().get(0).getCategory());
+		assertEquals("ProofOfIdentity", response.getResponse().getDocuments().get(1).getCategory());
+		verify(objectStoreHelper).getDraftBiometricObject("RID_HASH_TEST", "1234");
+		verify(objectStoreHelper).getDraftDemographicObject("RID_HASH_TEST", "1236");
+		verify(objectStoreHelper, never()).getBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDemographicObject(anyString(), anyString());
+	}
+
+	@Test
+	public void should_returnFullDraft_when_typeIsNullOrBlank() throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
+		IdResponseDTO nullType = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), null);
+		IdResponseDTO blankType = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "  ");
+
+		assertEquals("DRAFTED", nullType.getResponse().getStatus());
+		assertEquals(List.of("x", "y"), nullType.getResponse().getVerifiedAttributes());
+		assertEquals(2, nullType.getResponse().getDocuments().size());
+		assertEquals("DRAFTED", blankType.getResponse().getStatus());
+		assertEquals(List.of("x", "y"), blankType.getResponse().getVerifiedAttributes());
+		assertEquals(2, blankType.getResponse().getDocuments().size());
+	}
+
+	@Test
+	public void should_treatTypeAsDemographics_when_getDraftV2_typeIsMixedCaseWithPadding()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
+		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), " DEMOGRAPHICS ");
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNotNull(response.getResponse().getIdentity());
+		assertTrue(response.getResponse().getDocuments() == null
+				|| response.getResponse().getDocuments().isEmpty());
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
+	}
+
+	@Test
+	public void should_skipFileReads_when_getDraftV2_collectionsAreNull() throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setBiometrics(null);
+		draft.setDocuments(null);
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
+		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "all");
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNotNull(response.getResponse().getIdentity());
+		assertTrue(response.getResponse().getDocuments() == null
+				|| response.getResponse().getDocuments().isEmpty());
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
+	}
+
+	@Test
+	public void should_skipSupportingDocumentReads_when_getDraftV2_documentsListIsEmpty()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setDocuments(new ArrayList<>());
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+
+		IdResponseDTO response = idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "supportingdocuments");
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertTrue(response.getResponse().getDocuments() == null
+				|| response.getResponse().getDocuments().isEmpty());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+	}
+
+	@Test
+	public void should_throwInvalidInputParameter_when_typeIsInvalid() throws IdRepoAppException {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "invalid"));
 		assertEquals(IdRepoErrorConstants.INVALID_INPUT_PARAMETER.getErrorCode(), thrown.getErrorCode());
+		assertEquals(String.format(IdRepoErrorConstants.INVALID_INPUT_PARAMETER.getErrorMessage(), "type"),
+				thrown.getErrorText());
+		verify(uinDraftRepo, never()).findByRegId(any());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
 	}
 
 	@Test
-	public void should_throwNoRecordFound_when_getDraftV2_ridDoesNotExist() {
+	public void should_throwNoRecordFound_when_getDraftV2_ridDoesNotExist() throws IdRepoAppException {
 		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.empty());
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "demographics"));
 		assertEquals(IdRepoErrorConstants.NO_RECORD_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
+	}
+
+	@Test
+	public void should_throwDatabaseAccessError_when_getDraftV2_jdbcException() throws IdRepoAppException {
+		when(uinDraftRepo.findByRegId(any())).thenThrow(JDBCConnectionException.class);
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "all"));
+		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
+	}
+
+	@Test
+	public void should_throwFileNotFound_when_getDraftV2_supportingDocumentMissing()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+		when(objectStoreHelper.getDraftDemographicObject(anyString(), anyString()))
+				.thenThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_NOT_FOUND));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "supportingdocuments"));
+		assertEquals(IdRepoErrorConstants.FILE_NOT_FOUND.getErrorCode(), thrown.getErrorCode());
+	}
+
+	@Test
+	public void should_throwFileNotFound_when_getDraftV2_biometricMissing()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		stubDraftObjectStoreReads();
+		when(objectStoreHelper.getDraftBiometricObject(anyString(), anyString()))
+				.thenThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_NOT_FOUND));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.getDraftV2("1234567890", new HashMap<>(), "biometrics"));
+		assertEquals(IdRepoErrorConstants.FILE_NOT_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getDraftDemographicObject(anyString(), anyString());
 	}
 
 	// ── createDraftV2 (generateUin=true) — createDraftWithUin ──────────────
@@ -1649,6 +1828,90 @@ public class IdRepoDraftServiceImplTest {
 	}
 
 	@Test
+	public void should_copyDocumentsOnly_when_createDraftV2_hasNoBiometrics() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		UinDocument document = new UinDocument();
+		document.setDoccatCode("ProofOfIdentity");
+		document.setDocId("doc-1");
+		document.setDocName("name");
+		document.setDocHash("hash");
+		uinEntity.setDocuments(new ArrayList<>(List.of(document)));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		stubCreateDraftCrypto();
+		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
+
+		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", "274390482564", true);
+
+		assertDraftedResponse(response);
+		String livePrefix = uinEntity.getUinHash().split("_")[1];
+		verify(objectStoreHelper, never()).copyBiometricLiveToDraft(any(), any(), any());
+		verify(objectStoreHelper).copyDemographicLiveToDraft(livePrefix, "rid-hash", "doc-1");
+		verify(uinDraftRepo).save(any(UinDraft.class));
+		UinDraft saved = captureSavedDraft();
+		assertEquals("doc-1", saved.getDocuments().get(0).getDocId());
+		assertTrue(saved.getBiometrics() == null || saved.getBiometrics().isEmpty());
+	}
+
+	@Test
+	public void should_copyBiometricsOnly_when_createDraftV2_hasNoDocuments() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		UinBiometric biometric = new UinBiometric();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBioFileId("bio-1");
+		biometric.setBiometricFileName("name");
+		biometric.setBiometricFileHash("hash");
+		uinEntity.setBiometrics(new ArrayList<>(List.of(biometric)));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		stubCreateDraftCrypto();
+		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
+
+		IdResponseDTO response = idRepoServiceImpl.createDraftV2("REG123", "274390482564", true);
+
+		assertDraftedResponse(response);
+		String livePrefix = uinEntity.getUinHash().split("_")[1];
+		verify(objectStoreHelper).copyBiometricLiveToDraft(livePrefix, "rid-hash", "bio-1");
+		verify(objectStoreHelper, never()).copyDemographicLiveToDraft(any(), any(), any());
+		UinDraft saved = captureSavedDraft();
+		assertEquals("bio-1", saved.getBiometrics().get(0).getBioFileId());
+		assertTrue(saved.getDocuments() == null || saved.getDocuments().isEmpty());
+	}
+
+	@Test
+	public void should_notSaveDraft_when_createDraftV2_demographicCopyFails_afterBioCopy() throws Exception {
+		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
+		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
+		Uin uinEntity = buildUinEntity();
+		UinBiometric biometric = new UinBiometric();
+		biometric.setBiometricFileType("individualBiometrics");
+		biometric.setBioFileId("bio-1");
+		biometric.setBiometricFileName("name");
+		biometric.setBiometricFileHash("hash");
+		uinEntity.setBiometrics(new ArrayList<>(List.of(biometric)));
+		UinDocument document = new UinDocument();
+		document.setDoccatCode("ProofOfIdentity");
+		document.setDocId("doc-1");
+		document.setDocName("name");
+		document.setDocHash("hash");
+		uinEntity.setDocuments(new ArrayList<>(List.of(document)));
+		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
+		stubCreateDraftCrypto();
+		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR))
+				.when(objectStoreHelper).copyDemographicLiveToDraft(any(), any(), any());
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
+
+		assertEquals(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper).copyBiometricLiveToDraft(any(), any(), any());
+		verify(uinDraftRepo, never()).save(any());
+	}
+
+	@Test
 	public void should_notSaveDraft_when_createDraftV2_objectStoreCopyFails() throws Exception {
 		when(uinHistoryRepo.existsByRegId(any())).thenReturn(false);
 		when(uinDraftRepo.existsByRegId(any())).thenReturn(false);
@@ -1746,6 +2009,11 @@ public class IdRepoDraftServiceImplTest {
 		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
 		IdResponseDTO response = idRepoServiceImpl.updateDraftUinData("REG123", "274390482564");
 		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertEquals("1234_some-hash", draft.getUinHash());
+		assertEquals("1234_encrypted", draft.getUin());
+		verify(uinDraftRepo).flush();
+		verify(uinDraftRepo, never()).save(any());
 	}
 
 	// Regression for a NullPointerException seen in production: a LOST-packet draft has
@@ -1803,6 +2071,52 @@ public class IdRepoDraftServiceImplTest {
 		assertEquals("live-address", mergedData.get("addressLine1"));
 	}
 
+	@Test
+	public void should_throwRecordExists_when_updateDraftUinData_flushHitsUniqueConstraint()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUinHash(null);
+		when(uinDraftRepo.findByRegId(anyString())).thenReturn(Optional.of(draft));
+		when(uinRepo.existsByUinHash(any())).thenReturn(true);
+		when(uinRepo.findByUinHash(any())).thenReturn(Optional.of(buildLiveUin()));
+		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
+		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
+		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
+		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
+		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
+		doThrow(new DataIntegrityViolationException("uk_uin_hash")).when(uinDraftRepo).flush();
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.updateDraftUinData("REG123", "274390482564"));
+
+		assertEquals(IdRepoErrorConstants.RECORD_EXISTS.getErrorCode(), thrown.getErrorCode());
+	}
+
+	@Test
+	public void should_skipBackfill_when_updateDraftUinData_liveUinDataIsNull()
+			throws IdRepoAppException, IOException {
+		UinDraft draft = buildMinimalDraft();
+		draft.setUinHash(null);
+		byte[] originalUinData = draft.getUinData();
+		when(uinDraftRepo.findByRegId(anyString())).thenReturn(Optional.of(draft));
+		when(uinRepo.existsByUinHash(any())).thenReturn(true);
+		Uin liveUin = Mockito.spy(new Uin());
+		doReturn(null).when(liveUin).getUinData();
+		when(uinRepo.findByUinHash(any())).thenReturn(Optional.of(liveUin));
+		when(securityManager.getSaltKeyForId(anyString())).thenReturn(1234);
+		when(uinEncryptSaltRepo.retrieveSaltById(anyInt())).thenReturn("YWJj");
+		when(securityManager.encryptWithSalt(any(), any(), any())).thenReturn("encrypted".getBytes());
+		when(uinHashSaltRepo.retrieveSaltById(anyInt())).thenReturn("hashSalt");
+		when(securityManager.hashwithSalt(any(), any())).thenReturn("some-hash");
+
+		IdResponseDTO response = idRepoServiceImpl.updateDraftUinData("REG123", "274390482564");
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertEquals("1234_some-hash", draft.getUinHash());
+		assertSame(originalUinData, draft.getUinData());
+		verify(uinDraftRepo).flush();
+	}
+
 	// ── updateDraftV2 ────────────────────────────────────────────────────────
 
 	@Test
@@ -1812,12 +2126,16 @@ public class IdRepoDraftServiceImplTest {
 		IdRequestDTO request = new IdRequestDTO();
 		request.setRequest(new RequestDTO());
 		IdResponseDTO response = idRepoServiceImpl.updateDraftV2("1234567890", request);
-		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertNull(response.getResponse().getDocuments());
+		verify(uinDraftRepo).save(draft);
+		verify(objectStoreHelper, never()).getRidHash(anyString());
 	}
 
 	@Test
 	public void should_updateDraftV2_firstLostUpdate_when_uinDataAndUinHashAreNull()
-			throws IdRepoAppException {
+			throws IdRepoAppException, IOException {
 		UinDraft draft = new UinDraft();
 		draft.setRegId("1234567890");
 		draft.setStatusCode("DRAFT");
@@ -1836,6 +2154,8 @@ public class IdRepoDraftServiceImplTest {
 		assertEquals("DRAFTED", response.getResponse().getStatus());
 		assertNull(draft.getUinHash());
 		assertNotNull(draft.getUinData());
+		Map<String, Object> stored = mapper.readValue(draft.getUinData(), new TypeReference<Map<String, Object>>() {});
+		assertEquals("lost@mosip.net", stored.get("email"));
 		verify(uinDraftRepo).save(draft);
 		verify(identityUpdateTracker, never()).save(any());
 	}
@@ -1977,7 +2297,8 @@ public class IdRepoDraftServiceImplTest {
 	}
 
 	@Test
-	public void should_throwDraftUinDetailsNotFound_when_publishDraftV2_uinIsNull() throws IOException {
+	public void should_throwDraftUinDetailsNotFound_when_publishDraftV2_uinIsNull()
+			throws IOException, IdRepoAppException {
 		ReflectionTestUtils.setField(idRepoServiceImpl, "anonymousProfileHelper", anonymousProfileHelper);
 		UinDraft draft = buildMinimalDraft();
 		draft.setUin(null);
@@ -1985,6 +2306,8 @@ public class IdRepoDraftServiceImplTest {
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.publishDraftV2("1234567890"));
 		assertEquals(IdRepoErrorConstants.DRAFT_UIN_DETAILS_NOT_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).moveAllDraftBiometricsToLive(anyString(), anyString());
+		verify(objectStoreHelper, never()).moveAllDraftDemographicsToLive(anyString(), anyString());
 	}
 
 	@Test
@@ -2023,27 +2346,35 @@ public class IdRepoDraftServiceImplTest {
 	@Test
 	public void should_returnEmptyResponse_when_extractBiometricsV2_extractionFormatsEmpty() throws IdRepoAppException {
 		IdResponseDTO response = idRepoServiceImpl.extractBiometricsV2("1234567890", new HashMap<>());
-		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertNull(response.getResponse().getDocuments());
+		verify(uinDraftRepo, never()).findByRegId(any());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
 	}
 
 	@Test
-	public void should_throwNoRecordFound_when_extractBiometricsV2_ridDoesNotExist() {
+	public void should_throwNoRecordFound_when_extractBiometricsV2_ridDoesNotExist()
+			throws IdRepoAppException {
 		Map<String, String> formats = new HashMap<>();
 		formats.put(FINGER_EXTRACTION_FORMAT, "fingerFormat");
 		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.empty());
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.extractBiometricsV2("REG123", formats));
 		assertEquals(IdRepoErrorConstants.NO_RECORD_FOUND.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
 	}
 
 	@Test
-	public void should_throwDatabaseAccessError_when_extractBiometricsV2_jdbcException() {
+	public void should_throwDatabaseAccessError_when_extractBiometricsV2_jdbcException()
+			throws IdRepoAppException {
 		Map<String, String> formats = new HashMap<>();
 		formats.put(FINGER_EXTRACTION_FORMAT, "fingerFormat");
 		when(uinDraftRepo.findByRegId(any())).thenThrow(JDBCConnectionException.class);
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.extractBiometricsV2("REG123", formats));
 		assertEquals(IdRepoErrorConstants.DATABASE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		verify(objectStoreHelper, never()).getRidHash(anyString());
 	}
 
 	// ── publishDraftV2 success-path ──────────────────────────────────────────
@@ -2089,6 +2420,7 @@ public class IdRepoDraftServiceImplTest {
 
 		assertNotNull(response);
 		assertEquals("ACTIVATED", response.getResponse().getStatus());
+		assertEquals(Map.of("vid", "VID-1"), response.getMetadata());
 		String expectedDest = "5B72C3B57A72C6497461289FCA7B1F865ED6FB0596B446FEA1F92AF931A5D4B7";
 		InOrder inOrder = inOrder(objectStoreHelper, uinRepo, uinBiometricDraftRepo, uinDocumentDraftRepo, uinDraftRepo);
 		inOrder.verify(objectStoreHelper).moveAllDraftBiometricsToLive("RID_HASH_TEST", expectedDest);
@@ -2259,6 +2591,7 @@ public class IdRepoDraftServiceImplTest {
 
 		assertNotNull(response);
 		assertEquals("ACTIVATED", response.getResponse().getStatus());
+		assertNull(response.getMetadata());
 		verify(spy).updateIdentity(any(), anyString());
 		verify(vidDraftHelper, never()).generateDraftVid(any());
 		verify(vidDraftHelper, never()).activateDraftVid(any());
@@ -2286,6 +2619,7 @@ public class IdRepoDraftServiceImplTest {
 
 		assertNotNull(response);
 		assertEquals("ACTIVATED", response.getResponse().getStatus());
+		assertNull(response.getMetadata());
 		verify(spy).addIdentity(any(), anyString());
 		verify(spy, never()).updateIdentity(any(), anyString());
 		verify(vidDraftHelper).generateDraftVid(any());
@@ -2303,6 +2637,7 @@ public class IdRepoDraftServiceImplTest {
 		IdResponseDTO response = idRepoServiceImpl.publishDraftV2("1234567890");
 
 		assertNotNull(response);
+		assertEquals("ACTIVATED", response.getResponse().getStatus());
 		verify(uinRepo).save(any());
 		verify(uinBiometricRepo).saveAll(any());
 		verify(uinDocumentRepo).saveAll(any());
@@ -2320,6 +2655,7 @@ public class IdRepoDraftServiceImplTest {
 		IdResponseDTO response = idRepoServiceImpl.publishDraftV2("1234567890");
 
 		assertNotNull(response);
+		assertEquals("ACTIVATED", response.getResponse().getStatus());
 		verify(uinRepo).save(any());
 		verify(uinBiometricRepo).saveAll(any());
 		verify(uinDocumentRepo).saveAll(any());
@@ -2337,10 +2673,14 @@ public class IdRepoDraftServiceImplTest {
 		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
 		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
 
-		idRepoServiceImpl.extractBiometricsV2("1234567890", formats);
+		IdResponseDTO response = idRepoServiceImpl.extractBiometricsV2("1234567890", formats);
 
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(response.getResponse().getIdentity());
+		assertNull(response.getResponse().getDocuments());
 		verify(objectStoreHelper).getDraftBiometricObject("RID_HASH_TEST", "1234");
 		verify(objectStoreHelper, never()).getBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).deleteBiometricObject(anyString(), anyString());
 	}
 
 	@Test
@@ -2430,6 +2770,42 @@ public class IdRepoDraftServiceImplTest {
 		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
 	}
 
+	@Test
+	public void should_extractBiometricsV2_skipExtraction_whenDraftBiometricsAreEmpty()
+			throws IdRepoAppException, IOException {
+		Map<String, String> formats = new HashMap<>();
+		formats.put(FINGER_EXTRACTION_FORMAT, "fingerFormat");
+		UinDraft draft = buildMinimalDraft();
+		draft.setBiometrics(new ArrayList<>());
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+
+		IdResponseDTO response = idRepoServiceImpl.extractBiometricsV2("1234567890", formats);
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		verify(objectStoreHelper).getRidHash("1234567890");
+		verify(objectStoreHelper, never()).deleteDraftBiometricObject(anyString(), anyString());
+		verify(objectStoreHelper, never()).getDraftBiometricObject(anyString(), anyString());
+	}
+
+	@Test
+	public void should_extractBiometricsV2_continue_when_deleteExistingDraftExtractionFails()
+			throws IdRepoAppException, IOException {
+		Map<String, String> formats = new HashMap<>();
+		formats.put(FINGER_EXTRACTION_FORMAT, "fingerFormat");
+		UinDraft draft = buildMinimalDraft();
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+		doThrow(new RuntimeException("stale-file-delete-failed"))
+				.when(objectStoreHelper).deleteDraftBiometricObject(anyString(), anyString());
+
+		IdResponseDTO response = idRepoServiceImpl.extractBiometricsV2("1234567890", formats);
+
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		verify(objectStoreHelper).deleteDraftBiometricObject("RID_HASH_TEST", "1234.finger.fingerFormat");
+		verify(objectStoreHelper).getDraftBiometricObject("RID_HASH_TEST", "1234");
+	}
+
 	private void stubDocumentUpload() throws Exception {
 		when(cbeffUtil.validateXML(any())).thenReturn(true);
 		when(securityManager.hash(any()))
@@ -2462,6 +2838,16 @@ public class IdRepoDraftServiceImplTest {
 		assertEquals("DRAFTED", response.getResponse().getStatus());
 		assertNull(response.getResponse().getIdentity());
 		assertNull(response.getResponse().getDocuments());
+	}
+
+	private void stubDraftObjectStoreReads() throws IdRepoAppException {
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+		when(objectStoreHelper.getDraftBiometricObject(eq("RID_HASH_TEST"), eq("1234")))
+				.thenReturn("cbeff-bytes".getBytes());
+		when(proxyService.getBiometricsForRequestedFormatsDraft(any(), any(), any(), any()))
+				.thenReturn("extracted-cbeff".getBytes());
+		when(objectStoreHelper.getDraftDemographicObject(eq("RID_HASH_TEST"), eq("1236")))
+				.thenReturn("doc-bytes".getBytes());
 	}
 
 	private void stubCreateDraftCrypto() throws IdRepoAppException {
@@ -2518,5 +2904,18 @@ public class IdRepoDraftServiceImplTest {
 				this.getClass().getClassLoader().getResourceAsStream("identity-data.json"), StandardCharsets.UTF_8);
 		uin.setUinData(identityData.getBytes());
 		return uin;
+	}
+
+	/**
+	 * Widens {@code getBiometricsForRequestedFormatsDraft} from protected to public
+	 * so this test class can stub and verify it. The production method stays
+	 * protected; Java only allows a direct call from the same package or a subclass.
+	 */
+	static class TestableProxyService extends IdRepoProxyServiceImpl {
+		@Override
+		public byte[] getBiometricsForRequestedFormatsDraft(String ridHash, String fileName,
+				Map<String, String> extractionFormats, byte[] originalData) throws IdRepoAppException {
+			return super.getBiometricsForRequestedFormatsDraft(ridHash, fileName, extractionFormats, originalData);
+		}
 	}
 }
