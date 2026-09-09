@@ -1816,6 +1816,132 @@ public class IdRepoDraftServiceImplTest {
 	}
 
 	@Test
+	public void should_updateDraftV2_firstLostUpdate_when_uinDataAndUinHashAreNull()
+			throws IdRepoAppException {
+		UinDraft draft = new UinDraft();
+		draft.setRegId("1234567890");
+		draft.setStatusCode("DRAFT");
+		draft.setUin(null);
+		draft.setUinHash(null);
+		draft.setUinData(null);
+		draft.setBiometrics(new ArrayList<>());
+		draft.setDocuments(new ArrayList<>());
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		when(securityManager.hash(any())).thenReturn("DATAHASH");
+		IdRequestDTO request = identityUpdateRequest(Map.of("email", "lost@mosip.net"));
+
+		IdResponseDTO response = idRepoServiceImpl.updateDraftV2("1234567890", request);
+
+		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		assertNull(draft.getUinHash());
+		assertNotNull(draft.getUinData());
+		verify(uinDraftRepo).save(draft);
+		verify(identityUpdateTracker, never()).save(any());
+	}
+
+	@Test
+	public void should_throwDraftUinDetailsNotFound_when_updateDraftV2_secondIdentityChange_withoutUinHash()
+			throws IdRepoAppException {
+		UinDraft draft = lostDraftWithUinData(Map.of("email", "first@mosip.net"));
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		IdRequestDTO request = identityUpdateRequest(Map.of("email", "second@mosip.net"));
+
+		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
+				idRepoServiceImpl.updateDraftV2("1234567890", request));
+
+		assertEquals(IdRepoErrorConstants.DRAFT_UIN_DETAILS_NOT_FOUND.getErrorCode(), thrown.getErrorCode());
+		assertEquals(IdRepoErrorConstants.DRAFT_UIN_DETAILS_NOT_FOUND.getErrorMessage(), thrown.getErrorText());
+		verify(uinDraftRepo, never()).save(any());
+		verify(identityUpdateTracker, never()).findById(any());
+		verify(identityUpdateTracker, never()).save(any());
+	}
+
+	@Test
+	public void should_updateDraftV2_when_secondCallHasSameIdentity_withoutUinHash()
+			throws IdRepoAppException {
+		Map<String, Object> identity = Map.of("email", "lost@mosip.net");
+		UinDraft draft = lostDraftWithUinData(identity);
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		when(securityManager.hash(any())).thenReturn("DATAHASH");
+		IdRequestDTO request = identityUpdateRequest(identity);
+
+		IdResponseDTO response = idRepoServiceImpl.updateDraftV2("1234567890", request);
+
+		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		verify(uinDraftRepo).save(draft);
+		verify(identityUpdateTracker, never()).save(any());
+	}
+
+	@Test
+	public void should_updateDraftV2_when_secondCallHasDocumentsOnly_withoutUinHash()
+			throws IdRepoAppException {
+		UinDraft draft = lostDraftWithUinData(Map.of("email", "lost@mosip.net"));
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		when(objectStoreHelper.getRidHash(anyString())).thenReturn("RID_HASH_TEST");
+		IdRequestDTO request = new IdRequestDTO();
+		RequestDTO req = new RequestDTO();
+		req.setRegistrationId("1234567890");
+		request.setRequest(req);
+
+		IdResponseDTO response = idRepoServiceImpl.updateDraftV2("1234567890", request);
+
+		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		verify(uinDraftRepo).save(draft);
+		verify(identityUpdateTracker, never()).save(any());
+	}
+
+	@Test
+	public void should_updateDraftV2_secondIdentityChange_when_uinHashIsPresent()
+			throws IdRepoAppException {
+		UinDraft draft = lostDraftWithUinData(Map.of("email", "first@mosip.net"));
+		draft.setUinHash("123_some-hash");
+		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.of(draft));
+		ReflectionTestUtils.setField(idRepoServiceImpl, "identityUpdateTracker", identityUpdateTracker);
+		when(identityUpdateTracker.findById(any())).thenReturn(Optional.empty());
+		when(securityManager.hash(any())).thenReturn("DATAHASH");
+		IdRequestDTO request = identityUpdateRequest(Map.of("email", "second@mosip.net"));
+
+		IdResponseDTO response = idRepoServiceImpl.updateDraftV2("1234567890", request);
+
+		assertNotNull(response);
+		assertEquals("DRAFTED", response.getResponse().getStatus());
+		verify(uinDraftRepo).save(draft);
+		verify(identityUpdateTracker).save(any());
+	}
+
+	private UinDraft lostDraftWithUinData(Map<String, Object> identity) {
+		UinDraft draft = new UinDraft();
+		draft.setRegId("1234567890");
+		draft.setStatusCode("DRAFT");
+		draft.setUin(null);
+		draft.setUinHash(null);
+		draft.setUinData(convertIdentity(identity));
+		draft.setBiometrics(new ArrayList<>());
+		draft.setDocuments(new ArrayList<>());
+		return draft;
+	}
+
+	private IdRequestDTO identityUpdateRequest(Map<String, Object> identity) {
+		IdRequestDTO request = new IdRequestDTO();
+		RequestDTO req = new RequestDTO();
+		req.setRegistrationId("1234567890");
+		req.setIdentity(new HashMap<>(identity));
+		request.setRequest(req);
+		return request;
+	}
+
+	private byte[] convertIdentity(Map<String, Object> identity) {
+		try {
+			return mapper.writeValueAsBytes(identity);
+		} catch (JsonProcessingException e) {
+			throw new IllegalStateException(e);
+		}
+	}
+
+	@Test
 	public void should_throwNoRecordFound_when_updateDraftV2_ridDoesNotExist() {
 		when(uinDraftRepo.findByRegId(any())).thenReturn(Optional.empty());
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->

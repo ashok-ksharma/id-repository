@@ -1161,6 +1161,16 @@ public class IdRepoDraftServiceImpl extends IdRepoServiceImpl
 		JSONCompareResult diff = JSONCompare.compareJSON(
 				inputData.jsonString(), dbData.jsonString(), JSONCompareMode.LENIENT);
 		if (diff.failed()) {
+			// LOST packet: first updateDraftV2 writes uinData while uinHash is still
+			// unset (UIN is stamped later via updateDraftUinData). A later identity
+			// change would call updateJsonObject with a null hash and NPE inside
+			// Map.entry. Fail with a draft error instead of a generic 500.
+			if (draftToUpdate.getUinHash() == null) {
+				idrepoDraftLogger.error(IdRepoSecurityManager.getUser(), ID_REPO_DRAFT_SERVICE_IMPL,
+						UPDATE_DRAFT, "UIN details not found in draft | regId=" + draftToUpdate.getRegId()
+								+ " | uinHashNull=true | hasUinData=" + (draftToUpdate.getUinData() != null));
+				throw new IdRepoAppException(DRAFT_UIN_DETAILS_NOT_FOUND);
+			}
 			super.updateJsonObject(draftToUpdate.getUinHash(), inputData, dbData, diff, false);
 		}
 
