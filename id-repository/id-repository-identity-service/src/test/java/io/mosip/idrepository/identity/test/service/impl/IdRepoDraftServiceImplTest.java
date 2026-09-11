@@ -1900,13 +1900,14 @@ public class IdRepoDraftServiceImplTest {
 		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
 		stubCreateDraftCrypto();
 		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
-		doThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR))
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorCode(),
+				IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorMessage()))
 				.when(objectStoreHelper).copyDemographicLiveToDraft(any(), any(), any());
 
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
 
-		assertEquals(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorCode(), thrown.getErrorCode());
 		verify(objectStoreHelper).copyBiometricLiveToDraft(any(), any(), any());
 		verify(uinDraftRepo, never()).save(any());
 	}
@@ -1925,13 +1926,14 @@ public class IdRepoDraftServiceImplTest {
 		when(uinRepo.findWithBiometricsByUinHash(any())).thenReturn(Optional.of(uinEntity));
 		stubCreateDraftCrypto();
 		when(objectStoreHelper.getRidHash("REG123")).thenReturn("rid-hash");
-		doThrow(new IdRepoAppException(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR))
+		doThrow(new IdRepoAppException(IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorCode(),
+				IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorMessage()))
 				.when(objectStoreHelper).copyBiometricLiveToDraft(any(), any(), any());
 
 		IdRepoAppException thrown = assertThrows(IdRepoAppException.class, () ->
 				idRepoServiceImpl.createDraftV2("REG123", "274390482564", true));
 
-		assertEquals(IdRepoErrorConstants.FILE_STORAGE_ACCESS_ERROR.getErrorCode(), thrown.getErrorCode());
+		assertEquals(IdRepoErrorConstants.DRAFT_OBJECT_COPY_FAILED.getErrorCode(), thrown.getErrorCode());
 		verify(uinDraftRepo, never()).save(any());
 		verify(idRepoServiceHelper, never()).generateUin();
 	}
